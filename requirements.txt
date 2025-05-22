@@ -1,5 +1,5 @@
 streamlit
-oncv-python
+opencv-python
 scikit-image
 imageio
 brisque 
