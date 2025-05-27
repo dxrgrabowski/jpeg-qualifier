@@ -6,6 +6,7 @@ import argparse
 from PIL import Image, UnidentifiedImageError # For saving and reading JPEGs, and accessing Q tables
 import os
 import io as BytesIOModule # To handle byte streams for Pillow
+import re
 
 # Standard luminance quantization table (often used for quality 50 in libjpeg)
 # This is a reference point; actual tables vary by encoder and quality setting.
@@ -89,24 +90,8 @@ def get_jpeg_quality_from_qtable(image_path_or_bytes):
             return quality
 
         luminance_q_table_flat_filtered = luminance_q_table_flat[non_zero_std_indices]
-
-        # Calculate the scaling factor S. S = Q_image / Q_standard
-        # Averaging ratios can be problematic if some values are very small or very large.
-        # Instead, let's try to find a quality value that would produce a table similar to the image's q_table.
-        # This is an inverse problem. The original IJG scaling formulas are:
-        # if (quality < 50) scale = 5000 / quality; else scale = 200 - quality * 2;
-        # q_val = floor((std_q_val * scale + 50) / 100) for q<50
-        # q_val = floor((std_q_val * scale + 50) / 100) for q>=50, but scale is different.
-        # q_val = clamp(q_val, 1, 255)
-        
-        # Simpler: Estimate based on the average value of the Q table.
-        # Lower average Q value usually means higher quality.
         avg_q_val = np.mean(luminance_q_table_flat_filtered)
 
-        # Heuristic mapping: Q values typically range. E.g., for quality 100, avg Q might be low (e.g., <5).
-        # For quality 10, avg Q might be high (e.g., >50).
-        # This is a simplification of the libjpeg quality scaling.
-        # Let's try a curve fit or a lookup if possible, for now, a linear-ish map.
         if avg_q_val <= 10: quality = 95 - (avg_q_val - 1) # e.g. avg_val 1->95, 10->86
         elif avg_q_val <= 20: quality = 90 - (avg_q_val - 10) * 1.5 # e.g. 20 -> 75
         elif avg_q_val <= 50: quality = 75 - (avg_q_val - 20) * 1.0 # e.g. 50 -> 45
@@ -188,9 +173,44 @@ def main_streamlit():
         except Exception as e:
             st.error(f"Error processing image: {e}")
 
+def process_directory(directory_path):
+    """Process all image files in a directory and analyze their quality."""
+    if not os.path.isdir(directory_path):
+        print(f"Error: {directory_path} is not a valid directory")
+        return
+
+    supported_extensions = {'.jpg', '.jpeg', '.png'}
+    total_files = 0
+    processed_files = 0
+
+    print(f"\nAnalyzing images in directory: {directory_path}")
+    print("-" * 50)
+
+    # Get all files and sort them alphanumerically
+    files = [f for f in os.listdir(directory_path) 
+             if os.path.splitext(f)[1].lower() in supported_extensions]
+    files.sort(key=lambda x: [int(c) if c.isdigit() else c.lower() for c in re.split('([0-9]+)', x)])
+
+    for filename in files:
+        total_files += 1
+        file_path = os.path.join(directory_path, filename)
+        try:
+            estimated_quality_score = get_jpeg_quality_from_qtable(file_path)
+            quality_category = classify_quality(estimated_quality_score)
+            print(f"\nFile: {filename}")
+            print(f"Estimated Quality: {estimated_quality_score:.2f}%")
+            print(f"Quality Category: {quality_category}")
+            processed_files += 1
+        except Exception as e:
+            print(f"\nError processing {filename}: {e}")
+
+    print("\n" + "=" * 50)
+    print(f"Processing complete. Analyzed {processed_files} out of {total_files} image files.")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='JPEG Quality Estimator and Compressor')
     parser.add_argument('--file', type=str, help='Path to an image file to estimate quality.')
+    parser.add_argument('--dir', type=str, help='Path to a directory containing images to analyze.')
     parser.add_argument('--compress', type=str, help='Path to an image file to compress.')
     parser.add_argument('--quality', type=int, default=75, help='JPEG quality for compression (1-100).')
     parser.add_argument('--output', type=str, help='Output path for the compressed image.')
@@ -199,6 +219,8 @@ if __name__ == "__main__":
 
     if args.file:
         main_cli(args.file)
+    elif args.dir:
+        process_directory(args.dir)
     elif args.compress:
         if not args.output:
             # Default output name if not provided
